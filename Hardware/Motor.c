@@ -5,10 +5,10 @@
  * 麦轮 4 轮独立驱动（TB6612）
  *
  * 轮子 -> 方向脚(AIN1/AIN2) -> PWM 通道
- *   左前 FL : PA11 / PA12 -> TIM2_CH4 (PA3)
- *   左后 RL : PA6  / PA7  -> TIM2_CH2 (PA1)
- *   右前 FR : PA5  / PA4  -> TIM2_CH1 (PA0)
- *   右后 RR : PB5  / PB6  -> TIM2_CH3 (PA2)
+ *   左前 FL : PA12 / PA11 -> TIM2_CH4 (PA3), driver D
+ *   左后 RL : PA6  / PA7  -> TIM2_CH2 (PA1), driver B
+ *   右前 FR : PB5  / PB6  -> TIM2_CH3 (PA2), driver C
+ *   右后 RR : PA5  / PA4  -> TIM2_CH1 (PA0), driver A
  *
  * 注意：前/后轮的对应是按原 leftSpeed/rightSpeed 推测的。
  *       如果侧移变成斜着走，说明前后轮映射反了，
@@ -67,7 +67,7 @@ static void Wheel_SetSpeed(GPIO_TypeDef* PortA, uint16_t PinA,
 	}
 }
 
-void Wheel_FL_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOA, GPIO_Pin_11, GPIOA, GPIO_Pin_12, 4, Speed); }
+void Wheel_FL_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOA, GPIO_Pin_12, GPIOA, GPIO_Pin_11, 4, Speed); }
 void Wheel_RL_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOA, GPIO_Pin_6,  GPIOA, GPIO_Pin_7,  2, Speed); }
-void Wheel_FR_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOA, GPIO_Pin_5,  GPIOA, GPIO_Pin_4,  1, Speed); }
-void Wheel_RR_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOB, GPIO_Pin_5,  GPIOB, GPIO_Pin_6,  3, Speed); }
+void Wheel_FR_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOB, GPIO_Pin_5,  GPIOB, GPIO_Pin_6,  3, Speed); }
+void Wheel_RR_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOA, GPIO_Pin_5,  GPIOA, GPIO_Pin_4,  1, Speed); }
