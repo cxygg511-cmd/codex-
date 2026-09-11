@@ -1,7 +1,10 @@
 #ifndef __CAR_H
 #define __CAR_H
 
+#include <stdint.h>
+
 void Car_Init(void);
+void Car_Move(int8_t vx, int8_t vy, int8_t omega);
 void Move_Forward(void);
 void Move_Backward(void);
 void Car_Stop(void);

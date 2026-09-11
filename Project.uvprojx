@@ -745,6 +745,16 @@
               <FilePath>.\Hardware\Serial.h</FilePath>
             </File>
             <File>
+              <FileName>RemoteControl.c</FileName>
+              <FileType>1</FileType>
+              <FilePath>.\Hardware\RemoteControl.c</FilePath>
+            </File>
+            <File>
+              <FileName>RemoteControl.h</FileName>
+              <FileType>5</FileType>
+              <FilePath>.\Hardware\RemoteControl.h</FilePath>
+            </File>
+            <File>
               <FileName>Gray_Sensor.c</FileName>
               <FileType>1</FileType>
               <FilePath>.\Hardware\Gray_Sensor.c</FilePath>
