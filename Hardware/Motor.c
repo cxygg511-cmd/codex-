@@ -5,8 +5,8 @@
  * 麦轮 4 轮独立驱动（TB6612）
  *
  * 轮子 -> 方向脚(AIN1/AIN2) -> PWM 通道
- *   左前 FL : PA11 / PA12 -> TIM2_CH2 (PA1)
- *   左后 RL : PA6  / PA7  -> TIM2_CH4 (PA3)
+ *   左前 FL : PA11 / PA12 -> TIM2_CH4 (PA3)
+ *   左后 RL : PA6  / PA7  -> TIM2_CH2 (PA1)
  *   右前 FR : PA5  / PA4  -> TIM2_CH1 (PA0)
  *   右后 RR : PB5  / PB6  -> TIM2_CH3 (PA2)
  *
@@ -67,7 +67,7 @@ static void Wheel_SetSpeed(GPIO_TypeDef* PortA, uint16_t PinA,
 	}
 }
 
-void Wheel_FL_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOA, GPIO_Pin_11, GPIOA, GPIO_Pin_12, 2, Speed); }
-void Wheel_RL_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOA, GPIO_Pin_6,  GPIOA, GPIO_Pin_7,  4, Speed); }
+void Wheel_FL_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOA, GPIO_Pin_11, GPIOA, GPIO_Pin_12, 4, Speed); }
+void Wheel_RL_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOA, GPIO_Pin_6,  GPIOA, GPIO_Pin_7,  2, Speed); }
 void Wheel_FR_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOA, GPIO_Pin_5,  GPIOA, GPIO_Pin_4,  1, Speed); }
 void Wheel_RR_Speed(int8_t Speed) { Wheel_SetSpeed(GPIOB, GPIO_Pin_5,  GPIOB, GPIO_Pin_6,  3, Speed); }
