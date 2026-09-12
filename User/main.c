@@ -5,6 +5,7 @@
 #include "Serial.h"
 #include "PWM.h"
 #include "RemoteControl.h"
+#include "IMU.h"
 //#include "Grayscale_Sensor.h"
 //#include "XUN.h"
 #include "Key.h"
@@ -17,11 +18,13 @@ int main(void)
     //GRAY_Init();
     Serial_Init();
     RemoteControl_Init();
+    IMU_Init();
     //Track_PID_Init();
 
     while (1)
     {
         RemoteControl_Update(MAIN_LOOP_PERIOD_MS);
+        IMU_Update();
         //Track_Control();
         //if(s == 1)
         //{

@@ -1,15 +1,21 @@
 #include "RemoteControl.h"
 #include "Car.h"
+#include "IMU.h"
 #include "Motor.h"
+#include "MPU6050.h"
+#include "MyI2C.h"
 #include "Serial.h"
 #include <string.h>
 
 #define REMOTE_LINE_BUFFER_SIZE  48
 #define REMOTE_TIMEOUT_MS        500
+#define TELEMETRY_MIN_PERIOD_MS  20
 
 static char RxLine[REMOTE_LINE_BUFFER_SIZE];
 static uint8_t RxLineLength = 0;
 static uint16_t TimeSinceLastCommand = 0;
+static uint16_t TelemetryPeriodMs = 0;
+static uint16_t TelemetryElapsedMs = 0;
 
 static int8_t LimitCommandSpeed(int value)
 {
@@ -60,6 +66,15 @@ static uint8_t ParseInt(char **text, int *value)
     return 1;
 }
 
+static int16_t FloatToCent(float value)
+{
+    if (value >= 0.0f)
+    {
+        return (int16_t)(value * 100.0f + 0.5f);
+    }
+    return (int16_t)(value * 100.0f - 0.5f);
+}
+
 static void SetWheelSpeeds(int fl, int fr, int rl, int rr)
 {
     Wheel_FL_Speed(LimitCommandSpeed(fl));
@@ -73,6 +88,49 @@ static void ReplyOk(char *command)
     Serial_SendString("OK ");
     Serial_SendString(command);
     Serial_SendString("\r\n");
+}
+
+static void SendTelemetry(void)
+{
+    Serial_Printf("DATA %d %d %d %d %d %d %d %d %d\r\n",
+                  IMU_IsReady(),
+                  FloatToCent(IMU_GetYaw()),
+                  FloatToCent(IMU_GetGyroZ()),
+                  g_imu_raw.acc_x,
+                  g_imu_raw.acc_y,
+                  g_imu_raw.acc_z,
+                  g_imu_raw.gyro_x,
+                  g_imu_raw.gyro_y,
+                  g_imu_raw.gyro_z);
+}
+
+static void HandleStreamCommand(char *line)
+{
+    char *args = &line[6];
+    int period_ms;
+
+    if (!ParseInt(&args, &period_ms))
+    {
+        Serial_SendString("ERR STREAM_PERIOD\r\n");
+        return;
+    }
+
+    if (period_ms <= 0)
+    {
+        TelemetryPeriodMs = 0;
+        TelemetryElapsedMs = 0;
+        ReplyOk("STREAM_OFF");
+        return;
+    }
+
+    if (period_ms < TELEMETRY_MIN_PERIOD_MS)
+    {
+        period_ms = TELEMETRY_MIN_PERIOD_MS;
+    }
+
+    TelemetryPeriodMs = (uint16_t)period_ms;
+    TelemetryElapsedMs = 0;
+    ReplyOk("STREAM");
 }
 
 static void HandleCommand(char *line)
@@ -94,6 +152,34 @@ static void HandleCommand(char *line)
     if (strcmp(line, "PING") == 0)
     {
         ReplyOk("PONG");
+        return;
+    }
+
+    if (strcmp(line, "MPUID") == 0)
+    {
+        Serial_Printf("MPUID %d\r\n", MPU6050_GetID());
+        return;
+    }
+
+    if (strcmp(line, "I2CDBG") == 0)
+    {
+        MyI2C_Init();
+        Serial_Printf("I2CDBG SCL %d SDA %d ACK68 %d ACK69 %d\r\n",
+                      MyI2C_ReadSclLine(),
+                      MyI2C_ReadSdaLine(),
+                      MyI2C_CheckDevice(0xD0),
+                      MyI2C_CheckDevice(0xD2));
+        return;
+    }
+    if (strcmp(line, "DATA") == 0 || strcmp(line, "STATUS") == 0)
+    {
+        SendTelemetry();
+        return;
+    }
+
+    if (strncmp(line, "STREAM", 6) == 0)
+    {
+        HandleStreamCommand(line);
         return;
     }
 
@@ -157,6 +243,8 @@ void RemoteControl_Init(void)
 {
     RxLineLength = 0;
     TimeSinceLastCommand = 0;
+    TelemetryPeriodMs = 0;
+    TelemetryElapsedMs = 0;
     Car_Stop();
     Serial_SendString("READY\r\n");
 }
@@ -176,6 +264,16 @@ void RemoteControl_Update(uint16_t elapsed_ms)
         if (TimeSinceLastCommand >= REMOTE_TIMEOUT_MS)
         {
             Car_Stop();
+        }
+    }
+
+    if (TelemetryPeriodMs > 0)
+    {
+        TelemetryElapsedMs += elapsed_ms;
+        if (TelemetryElapsedMs >= TelemetryPeriodMs)
+        {
+            TelemetryElapsedMs = 0;
+            SendTelemetry();
         }
     }
 }
