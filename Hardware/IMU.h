@@ -29,5 +29,6 @@ void IMU_Update(void);
 uint8_t IMU_IsReady(void);
 float IMU_GetYaw(void);
 float IMU_GetGyroZ(void);
+void IMU_ResetYaw(void);
 
 #endif

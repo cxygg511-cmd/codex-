@@ -13,6 +13,13 @@
 #define IMU_STARTUP_SKIP        50
 #define IMU_MPU6050_ID          0x68
 #define IMU_MPU6500_ID          0x70
+#define IMU_GYRO_Z_Q            0.02f
+#define IMU_GYRO_Z_R            1.20f
+#define IMU_YAW_Q               0.01f
+#define IMU_YAW_R               3.00f
+#define IMU_GYRO_Z_DEADBAND_DPS 0.80f
+#define IMU_ACC_NORM_MIN        0.49f
+#define IMU_ACC_NORM_MAX        1.69f
 
 IMU_RawData g_imu_raw;
 IMU_Attitude g_imu_attitude;
@@ -27,6 +34,71 @@ static float q3 = 0.0f;
 static float integral_x = 0.0f;
 static float integral_y = 0.0f;
 static float integral_z = 0.0f;
+
+typedef struct
+{
+    float value;
+    float covariance;
+    float process_noise;
+    float measurement_noise;
+} Kalman1D;
+
+static Kalman1D gyro_z_filter = {0.0f, 1.0f, IMU_GYRO_Z_Q, IMU_GYRO_Z_R};
+static Kalman1D yaw_filter = {0.0f, 1.0f, IMU_YAW_Q, IMU_YAW_R};
+static uint8_t yaw_filter_ready = 0;
+static float yaw_gyro = 0.0f;
+
+static void Kalman_Reset(Kalman1D *filter, float value)
+{
+    filter->value = value;
+    filter->covariance = 1.0f;
+}
+
+static float Kalman_Update(Kalman1D *filter, float measurement)
+{
+    float gain;
+
+    filter->covariance += filter->process_noise;
+    gain = filter->covariance / (filter->covariance + filter->measurement_noise);
+    filter->value += gain * (measurement - filter->value);
+    filter->covariance *= (1.0f - gain);
+
+    return filter->value;
+}
+
+static float WrapAngle(float angle)
+{
+    while (angle > 180.0f)
+    {
+        angle -= 360.0f;
+    }
+
+    while (angle < -180.0f)
+    {
+        angle += 360.0f;
+    }
+
+    return angle;
+}
+
+static float AngleDiff(float target, float current)
+{
+    return WrapAngle(target - current);
+}
+
+static float Kalman_UpdateAngle(Kalman1D *filter, float measurement)
+{
+    float gain;
+    float error;
+
+    filter->covariance += filter->process_noise;
+    gain = filter->covariance / (filter->covariance + filter->measurement_noise);
+    error = AngleDiff(measurement, filter->value);
+    filter->value = WrapAngle(filter->value + gain * error);
+    filter->covariance *= (1.0f - gain);
+
+    return filter->value;
+}
 
 static float InvSqrt(float x)
 {
@@ -86,6 +158,10 @@ void IMU_Init(void)
     if (g_is_ready)
     {
         CalibrateOffsets();
+        Kalman_Reset(&gyro_z_filter, 0.0f);
+        Kalman_Reset(&yaw_filter, 0.0f);
+        yaw_filter_ready = 0;
+        yaw_gyro = 0.0f;
     }
 }
 
@@ -116,6 +192,8 @@ void IMU_Update(void)
     float r7;
     float r8;
     float r9;
+    float raw_gyro_z_dps;
+    float acc_norm_sq;
 
     if (!g_is_ready)
     {
@@ -131,9 +209,17 @@ void IMU_Update(void)
     gy = ((g_imu_raw.gyro_y - g_offsets[4]) / IMU_GYRO_SCALE) / IMU_RAD_TO_DEG;
     gz = ((g_imu_raw.gyro_z - g_offsets[5]) / IMU_GYRO_SCALE) / IMU_RAD_TO_DEG;
 
-    g_imu_attitude.gyro_z_dps = (g_imu_raw.gyro_z - g_offsets[5]) / IMU_GYRO_SCALE;
+    raw_gyro_z_dps = (g_imu_raw.gyro_z - g_offsets[5]) / IMU_GYRO_SCALE;
+    g_imu_attitude.gyro_z_dps = Kalman_Update(&gyro_z_filter, raw_gyro_z_dps);
+    if (g_imu_attitude.gyro_z_dps > -IMU_GYRO_Z_DEADBAND_DPS &&
+        g_imu_attitude.gyro_z_dps < IMU_GYRO_Z_DEADBAND_DPS)
+    {
+        g_imu_attitude.gyro_z_dps = 0.0f;
+    }
+    gz = g_imu_attitude.gyro_z_dps / IMU_RAD_TO_DEG;
 
-    recip_norm = InvSqrt(ax * ax + ay * ay + az * az);
+    acc_norm_sq = ax * ax + ay * ay + az * az;
+    recip_norm = InvSqrt(acc_norm_sq);
     ax *= recip_norm;
     ay *= recip_norm;
     az *= recip_norm;
@@ -142,17 +228,24 @@ void IMU_Update(void)
     vy = 2.0f * (q0 * q1 + q2 * q3);
     vz = 1.0f - 2.0f * (q1 * q1 + q2 * q2);
 
-    ex = ay * vz - az * vy;
-    ey = az * vx - ax * vz;
-    ez = ax * vy - ay * vx;
+    if (acc_norm_sq > IMU_ACC_NORM_MIN && acc_norm_sq < IMU_ACC_NORM_MAX)
+    {
+        ex = ay * vz - az * vy;
+        ey = az * vx - ax * vz;
+    }
+    else
+    {
+        ex = 0.0f;
+        ey = 0.0f;
+    }
+    ez = 0.0f;
 
     integral_x += ex * IMU_KI * IMU_DT_SEC;
     integral_y += ey * IMU_KI * IMU_DT_SEC;
-    integral_z += ez * IMU_KI * IMU_DT_SEC;
+    integral_z = 0.0f;
 
     gx += ex * IMU_KP + integral_x;
     gy += ey * IMU_KP + integral_y;
-    gz += ez * IMU_KP + integral_z;
 
     half_gx = 0.5f * gx * IMU_DT_SEC;
     half_gy = 0.5f * gy * IMU_DT_SEC;
@@ -185,7 +278,14 @@ void IMU_Update(void)
 
     g_imu_attitude.roll = atan2f(r8, r9) * IMU_RAD_TO_DEG;
     g_imu_attitude.pitch = -asinf(r7) * IMU_RAD_TO_DEG;
-    g_imu_attitude.yaw = atan2f(r4, r1) * IMU_RAD_TO_DEG;
+
+    yaw_gyro = WrapAngle(yaw_gyro + g_imu_attitude.gyro_z_dps * IMU_DT_SEC);
+    if (!yaw_filter_ready)
+    {
+        Kalman_Reset(&yaw_filter, yaw_gyro);
+        yaw_filter_ready = 1;
+    }
+    g_imu_attitude.yaw = Kalman_UpdateAngle(&yaw_filter, yaw_gyro);
 }
 
 uint8_t IMU_IsReady(void)
@@ -201,4 +301,11 @@ float IMU_GetYaw(void)
 float IMU_GetGyroZ(void)
 {
     return g_imu_attitude.gyro_z_dps;
+}
+void IMU_ResetYaw(void)
+{
+    yaw_gyro = 0.0f;
+    g_imu_attitude.yaw = 0.0f;
+    Kalman_Reset(&yaw_filter, 0.0f);
+    yaw_filter_ready = 1;
 }

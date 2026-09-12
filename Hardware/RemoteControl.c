@@ -10,12 +10,21 @@
 #define REMOTE_LINE_BUFFER_SIZE  48
 #define REMOTE_TIMEOUT_MS        500
 #define TELEMETRY_MIN_PERIOD_MS  20
+#define HEADING_HOLD_KP          1.2f
+#define HEADING_HOLD_KD          0.25f
+#define HEADING_HOLD_MAX_OMEGA   25
 
 static char RxLine[REMOTE_LINE_BUFFER_SIZE];
 static uint8_t RxLineLength = 0;
 static uint16_t TimeSinceLastCommand = 0;
 static uint16_t TelemetryPeriodMs = 0;
 static uint16_t TelemetryElapsedMs = 0;
+static uint8_t HeadingHoldEnabled = 0;
+static uint8_t HeadingHoldActive = 0;
+static float HeadingTargetYaw = 0.0f;
+static int8_t CommandVx = 0;
+static int8_t CommandVy = 0;
+static int8_t CommandOmega = 0;
 
 static int8_t LimitCommandSpeed(int value)
 {
@@ -32,6 +41,25 @@ static void SkipSpaces(char **text)
     }
 }
 
+static char *NormalizeLine(char *line)
+{
+    char *start = line;
+    char *end;
+
+    while (*start == ' ' || *start == '\t' || *start == '\0')
+    {
+        start++;
+    }
+
+    end = start + strlen(start);
+    while (end > start && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\0'))
+    {
+        end--;
+    }
+    *end = '\0';
+
+    return start;
+}
 static uint8_t ParseInt(char **text, int *value)
 {
     int sign = 1;
@@ -66,6 +94,79 @@ static uint8_t ParseInt(char **text, int *value)
     return 1;
 }
 
+static float WrapAngleError(float angle)
+{
+    while (angle > 180.0f)
+    {
+        angle -= 360.0f;
+    }
+
+    while (angle < -180.0f)
+    {
+        angle += 360.0f;
+    }
+
+    return angle;
+}
+
+static int8_t ClampCorrection(float value)
+{
+    if (value > HEADING_HOLD_MAX_OMEGA)
+    {
+        return HEADING_HOLD_MAX_OMEGA;
+    }
+
+    if (value < -HEADING_HOLD_MAX_OMEGA)
+    {
+        return -HEADING_HOLD_MAX_OMEGA;
+    }
+
+    if (value >= 0.0f)
+    {
+        return (int8_t)(value + 0.5f);
+    }
+    return (int8_t)(value - 0.5f);
+}
+
+static uint8_t IsLinearMoveCommand(void)
+{
+    return (CommandVx != 0 || CommandVy != 0) && CommandOmega == 0;
+}
+
+static void ApplyMotionCommand(void)
+{
+    int8_t omega;
+    float error;
+    float correction;
+
+    omega = CommandOmega;
+    if (HeadingHoldEnabled && IsLinearMoveCommand() && IMU_IsReady())
+    {
+        if (!HeadingHoldActive)
+        {
+            HeadingTargetYaw = IMU_GetYaw();
+            HeadingHoldActive = 1;
+        }
+
+        error = WrapAngleError(HeadingTargetYaw - IMU_GetYaw());
+        correction = error * HEADING_HOLD_KP - IMU_GetGyroZ() * HEADING_HOLD_KD;
+        omega = ClampCorrection(correction);
+    }
+    else
+    {
+        HeadingHoldActive = 0;
+    }
+
+    Car_Move(CommandVx, CommandVy, omega);
+}
+
+static void SetMotionCommand(int8_t vx, int8_t vy, int8_t omega)
+{
+    CommandVx = vx;
+    CommandVy = vy;
+    CommandOmega = omega;
+    ApplyMotionCommand();
+}
 static int16_t FloatToCent(float value)
 {
     if (value >= 0.0f)
@@ -133,29 +234,64 @@ static void HandleStreamCommand(char *line)
     ReplyOk("STREAM");
 }
 
+static void HandleHoldCommand(char *line)
+{
+    char *args = &line[4];
+    int enabled;
+
+    if (!ParseInt(&args, &enabled))
+    {
+        Serial_Printf("HOLD %d\r\n", HeadingHoldEnabled);
+        return;
+    }
+
+    HeadingHoldEnabled = enabled ? 1 : 0;
+    HeadingHoldActive = 0;
+    ReplyOk(HeadingHoldEnabled ? "HOLD_ON" : "HOLD_OFF");
+}
 static void HandleCommand(char *line)
 {
-    char command = line[0];
-    char *args = &line[1];
+    char command;
+    char *args;
     int a;
     int b;
     int c;
     int d;
 
+    line = NormalizeLine(line);
+    command = line[0];
+    args = &line[1];
+
     if (strcmp(line, "STOP") == 0 || strcmp(line, "S") == 0)
     {
-        Car_Stop();
+        SetMotionCommand(0, 0, 0);
         ReplyOk("STOP");
         return;
     }
 
-    if (strcmp(line, "PING") == 0)
+    if (strcmp(line, "PING") == 0 || strcmp(line, "?") == 0)
     {
         ReplyOk("PONG");
         return;
     }
 
-    if (strcmp(line, "MPUID") == 0)
+
+    if (strcmp(line, "YAW0") == 0)
+    {
+        IMU_ResetYaw();
+        HeadingTargetYaw = 0.0f;
+        HeadingHoldActive = 0;
+        ReplyOk("YAW0");
+        return;
+    }
+
+    if (strncmp(line, "HOLD", 4) == 0)
+    {
+        HandleHoldCommand(line);
+        return;
+    }
+
+    if (strcmp(line, "MPUID") == 0 || strcmp(line, "U") == 0)
     {
         Serial_Printf("MPUID %d\r\n", MPU6050_GetID());
         return;
@@ -171,7 +307,7 @@ static void HandleCommand(char *line)
                       MyI2C_CheckDevice(0xD2));
         return;
     }
-    if (strcmp(line, "DATA") == 0 || strcmp(line, "STATUS") == 0)
+    if (strcmp(line, "DATA") == 0 || strcmp(line, "STATUS") == 0 || strcmp(line, "D") == 0)
     {
         SendTelemetry();
         return;
@@ -185,21 +321,21 @@ static void HandleCommand(char *line)
 
     if (command == 'F' && ParseInt(&args, &a))
     {
-        Car_Move(LimitCommandSpeed(a), 0, 0);
+        SetMotionCommand(LimitCommandSpeed(a), 0, 0);
         ReplyOk("F");
         return;
     }
 
     if (command == 'B' && ParseInt(&args, &a))
     {
-        Car_Move(-LimitCommandSpeed(a), 0, 0);
+        SetMotionCommand(-LimitCommandSpeed(a), 0, 0);
         ReplyOk("B");
         return;
     }
 
     if (command == 'M' && ParseInt(&args, &a) && ParseInt(&args, &b) && ParseInt(&args, &c))
     {
-        Car_Move(LimitCommandSpeed(a), LimitCommandSpeed(b), LimitCommandSpeed(c));
+        SetMotionCommand(LimitCommandSpeed(a), LimitCommandSpeed(b), LimitCommandSpeed(c));
         ReplyOk("M");
         return;
     }
@@ -216,6 +352,11 @@ static void HandleCommand(char *line)
 
 static void PushReceivedByte(uint8_t byte)
 {
+    if (byte == 0)
+    {
+        return;
+    }
+
     if (byte == '\n' || byte == '\r')
     {
         if (RxLineLength > 0)
@@ -245,7 +386,10 @@ void RemoteControl_Init(void)
     TimeSinceLastCommand = 0;
     TelemetryPeriodMs = 0;
     TelemetryElapsedMs = 0;
-    Car_Stop();
+    HeadingHoldEnabled = 0;
+    HeadingHoldActive = 0;
+    HeadingTargetYaw = 0.0f;
+    SetMotionCommand(0, 0, 0);
     Serial_SendString("READY\r\n");
 }
 
@@ -263,8 +407,13 @@ void RemoteControl_Update(uint16_t elapsed_ms)
         TimeSinceLastCommand += elapsed_ms;
         if (TimeSinceLastCommand >= REMOTE_TIMEOUT_MS)
         {
-            Car_Stop();
+            SetMotionCommand(0, 0, 0);
         }
+    }
+
+    if (TimeSinceLastCommand < REMOTE_TIMEOUT_MS && HeadingHoldEnabled && IsLinearMoveCommand())
+    {
+        ApplyMotionCommand();
     }
 
     if (TelemetryPeriodMs > 0)
