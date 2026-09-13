@@ -25,6 +25,7 @@ int main(void)
     {
         RemoteControl_Update(MAIN_LOOP_PERIOD_MS);
         IMU_Update();
+        Car_Update();
         //Track_Control();
         //if(s == 1)
         //{
@@ -33,3 +34,4 @@ int main(void)
         Delay_ms(MAIN_LOOP_PERIOD_MS);
     }
 }
+

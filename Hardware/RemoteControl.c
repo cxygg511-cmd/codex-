@@ -214,14 +214,20 @@ static float AbsFloat(float value)
     return value >= 0.0f ? value : -value;
 }
 
-static void StopTurnMotion(void)
+static void StopMotionNow(void)
 {
     TurnActive = 0;
     TurnElapsedMs = 0;
     CommandVx = 0;
     CommandVy = 0;
     CommandOmega = 0;
-    Car_Move(0, 0, 0);
+    HeadingHoldActive = 0;
+    Car_Stop();
+}
+
+static void StopTurnMotion(void)
+{
+    StopMotionNow();
 }
 
 static void ApplyTurnCommand(uint16_t elapsed_ms)
@@ -441,7 +447,7 @@ static void HandleCommand(char *line)
 
     if (strcmp(line, "STOP") == 0 || strcmp(line, "S") == 0)
     {
-        SetMotionCommand(0, 0, 0);
+        StopMotionNow();
         ReplyOk("STOP");
         return;
     }
@@ -576,7 +582,7 @@ void RemoteControl_Init(void)
     HeadingTargetYaw = 0.0f;
     TurnActive = 0;
     TurnElapsedMs = 0;
-    SetMotionCommand(0, 0, 0);
+    StopMotionNow();
     Serial_SendString("READY\r\n");
 }
 
@@ -599,7 +605,7 @@ void RemoteControl_Update(uint16_t elapsed_ms)
         TimeSinceLastCommand += elapsed_ms;
         if (TimeSinceLastCommand >= REMOTE_TIMEOUT_MS)
         {
-            SetMotionCommand(0, 0, 0);
+            StopMotionNow();
         }
     }
 
@@ -618,6 +624,9 @@ void RemoteControl_Update(uint16_t elapsed_ms)
         }
     }
 }
+
+
+
 
 
 
