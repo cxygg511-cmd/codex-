@@ -1,3 +1,17 @@
+/*
+ * ROCK Pi / ROS serial protocol on USART3.
+ *
+ * Short commands are preferred because the LoRa link is slow:
+ *   ?             ping, replies OK PONG
+ *   D             telemetry, replies DATA imu yaw_x100 gyro_z_x100 ax ay az gx gy gz
+ *   U             MPU id, replies MPUID value
+ *   S             stop all wheels
+ *   M vx vy wz    mecanum velocity command, -100..100
+ *   W fl fr rl rr direct wheel speed command, -100..100
+ *   YAW0          reset IMU yaw to zero
+ *   HOLD 1/0      enable/disable heading hold for linear motion
+ *   T angle       turn to yaw angle in degrees, replies OK TURN then OK TURN_DONE
+ */
 #include "RemoteControl.h"
 #include "Car.h"
 #include "IMU.h"
@@ -7,12 +21,27 @@
 #include "Serial.h"
 #include <string.h>
 
+/* Serial timing and command limits. */
 #define REMOTE_LINE_BUFFER_SIZE  48
 #define REMOTE_TIMEOUT_MS        500
 #define TELEMETRY_MIN_PERIOD_MS  20
+
+/* Heading hold keeps yaw steady while vx/vy commands are active. */
 #define HEADING_HOLD_KP          1.2f
 #define HEADING_HOLD_KD          0.25f
 #define HEADING_HOLD_MAX_OMEGA   25
+
+/* Closed-loop turn controller used by T/TURN commands. */
+#define TURN_CONTROL_KP          0.55f
+#define TURN_CONTROL_KD          0.90f
+#define TURN_MAX_OMEGA           45
+#define TURN_MIN_OMEGA           10
+#define TURN_FINE_ZONE_DEG       15.0f
+#define TURN_FINE_MAX_OMEGA      14
+#define TURN_FINE_MIN_OMEGA      6
+#define TURN_TARGET_TOL_DEG      4.0f
+#define TURN_RATE_TOL_DPS        8.0f
+#define TURN_TIMEOUT_MS          8000
 
 static char RxLine[REMOTE_LINE_BUFFER_SIZE];
 static uint8_t RxLineLength = 0;
@@ -25,7 +54,11 @@ static float HeadingTargetYaw = 0.0f;
 static int8_t CommandVx = 0;
 static int8_t CommandVy = 0;
 static int8_t CommandOmega = 0;
+static uint8_t TurnActive = 0;
+static float TurnTargetYaw = 0.0f;
+static uint16_t TurnElapsedMs = 0;
 
+/* Parsing helpers. */
 static int8_t LimitCommandSpeed(int value)
 {
     if (value > 100) return 100;
@@ -109,6 +142,7 @@ static float WrapAngleError(float angle)
     return angle;
 }
 
+/* Motion control helpers. */
 static int8_t ClampCorrection(float value)
 {
     if (value > HEADING_HOLD_MAX_OMEGA)
@@ -128,6 +162,110 @@ static int8_t ClampCorrection(float value)
     return (int8_t)(value - 0.5f);
 }
 
+static int8_t ClampTurnOmega(float value, float error)
+{
+    int8_t omega;
+    int8_t max_omega;
+    int8_t min_omega;
+    float abs_error;
+
+    abs_error = error >= 0.0f ? error : -error;
+    if (abs_error <= TURN_FINE_ZONE_DEG)
+    {
+        max_omega = TURN_FINE_MAX_OMEGA;
+        min_omega = TURN_FINE_MIN_OMEGA;
+    }
+    else
+    {
+        max_omega = TURN_MAX_OMEGA;
+        min_omega = TURN_MIN_OMEGA;
+    }
+
+    if (value > max_omega)
+    {
+        return max_omega;
+    }
+
+    if (value < -max_omega)
+    {
+        return -max_omega;
+    }
+
+    if (value >= 0.0f)
+    {
+        omega = (int8_t)(value + 0.5f);
+        if (omega > 0 && omega < min_omega)
+        {
+            omega = min_omega;
+        }
+        return omega;
+    }
+
+    omega = (int8_t)(value - 0.5f);
+    if (omega < 0 && omega > -min_omega)
+    {
+        omega = -min_omega;
+    }
+    return omega;
+}
+
+static float AbsFloat(float value)
+{
+    return value >= 0.0f ? value : -value;
+}
+
+static void StopTurnMotion(void)
+{
+    TurnActive = 0;
+    TurnElapsedMs = 0;
+    CommandVx = 0;
+    CommandVy = 0;
+    CommandOmega = 0;
+    Car_Move(0, 0, 0);
+}
+
+static void ApplyTurnCommand(uint16_t elapsed_ms)
+{
+    float error;
+    float correction;
+    int8_t omega;
+
+    if (!TurnActive)
+    {
+        return;
+    }
+
+    if (!IMU_IsReady())
+    {
+        StopTurnMotion();
+        Serial_SendString("ERR IMU_NOT_READY\r\n");
+        return;
+    }
+
+    if (TurnElapsedMs < TURN_TIMEOUT_MS)
+    {
+        TurnElapsedMs += elapsed_ms;
+    }
+
+    error = WrapAngleError(TurnTargetYaw - IMU_GetYaw());
+    if (AbsFloat(error) <= TURN_TARGET_TOL_DEG && AbsFloat(IMU_GetGyroZ()) <= TURN_RATE_TOL_DPS)
+    {
+        StopTurnMotion();
+        Serial_SendString("OK TURN_DONE\r\n");
+        return;
+    }
+
+    if (TurnElapsedMs >= TURN_TIMEOUT_MS)
+    {
+        StopTurnMotion();
+        Serial_SendString("ERR TURN_TIMEOUT\r\n");
+        return;
+    }
+
+    correction = error * TURN_CONTROL_KP - IMU_GetGyroZ() * TURN_CONTROL_KD;
+    omega = ClampTurnOmega(correction, error);
+    Car_Move(0, 0, omega);
+}
 static uint8_t IsLinearMoveCommand(void)
 {
     return (CommandVx != 0 || CommandVy != 0) && CommandOmega == 0;
@@ -162,6 +300,8 @@ static void ApplyMotionCommand(void)
 
 static void SetMotionCommand(int8_t vx, int8_t vy, int8_t omega)
 {
+    TurnActive = 0;
+    TurnElapsedMs = 0;
     CommandVx = vx;
     CommandVy = vy;
     CommandOmega = omega;
@@ -205,6 +345,7 @@ static void SendTelemetry(void)
                   g_imu_raw.gyro_z);
 }
 
+/* Command handlers. */
 static void HandleStreamCommand(char *line)
 {
     char *args = &line[6];
@@ -234,6 +375,42 @@ static void HandleStreamCommand(char *line)
     ReplyOk("STREAM");
 }
 
+static void HandleTurnCommand(char *line)
+{
+    char *args;
+    int target_deg;
+
+    if (line[0] == 'T')
+    {
+        args = &line[1];
+    }
+    else
+    {
+        args = &line[4];
+    }
+
+    if (!ParseInt(&args, &target_deg))
+    {
+        Serial_SendString("ERR TURN_TARGET\r\n");
+        return;
+    }
+
+    if (!IMU_IsReady())
+    {
+        Serial_SendString("ERR IMU_NOT_READY\r\n");
+        return;
+    }
+
+    CommandVx = 0;
+    CommandVy = 0;
+    CommandOmega = 0;
+    HeadingHoldActive = 0;
+    TurnTargetYaw = WrapAngleError((float)target_deg);
+    TurnElapsedMs = 0;
+    TurnActive = 1;
+    ReplyOk("TURN");
+    ApplyTurnCommand(0);
+}
 static void HandleHoldCommand(char *line)
 {
     char *args = &line[4];
@@ -282,6 +459,13 @@ static void HandleCommand(char *line)
         HeadingTargetYaw = 0.0f;
         HeadingHoldActive = 0;
         ReplyOk("YAW0");
+        return;
+    }
+
+
+    if (strncmp(line, "TURN", 4) == 0 || command == 'T')
+    {
+        HandleTurnCommand(line);
         return;
     }
 
@@ -350,6 +534,7 @@ static void HandleCommand(char *line)
     Serial_SendString("ERR UNKNOWN\r\n");
 }
 
+/* USART receive line assembly. */
 static void PushReceivedByte(uint8_t byte)
 {
     if (byte == 0)
@@ -389,6 +574,8 @@ void RemoteControl_Init(void)
     HeadingHoldEnabled = 0;
     HeadingHoldActive = 0;
     HeadingTargetYaw = 0.0f;
+    TurnActive = 0;
+    TurnElapsedMs = 0;
     SetMotionCommand(0, 0, 0);
     Serial_SendString("READY\r\n");
 }
@@ -402,7 +589,12 @@ void RemoteControl_Update(uint16_t elapsed_ms)
         PushReceivedByte(byte);
     }
 
-    if (TimeSinceLastCommand < REMOTE_TIMEOUT_MS)
+    if (TurnActive)
+    {
+        ApplyTurnCommand(elapsed_ms);
+    }
+
+    if (!TurnActive && TimeSinceLastCommand < REMOTE_TIMEOUT_MS)
     {
         TimeSinceLastCommand += elapsed_ms;
         if (TimeSinceLastCommand >= REMOTE_TIMEOUT_MS)
@@ -411,7 +603,7 @@ void RemoteControl_Update(uint16_t elapsed_ms)
         }
     }
 
-    if (TimeSinceLastCommand < REMOTE_TIMEOUT_MS && HeadingHoldEnabled && IsLinearMoveCommand())
+    if (!TurnActive && TimeSinceLastCommand < REMOTE_TIMEOUT_MS && HeadingHoldEnabled && IsLinearMoveCommand())
     {
         ApplyMotionCommand();
     }
@@ -426,3 +618,8 @@ void RemoteControl_Update(uint16_t elapsed_ms)
         }
     }
 }
+
+
+
+
+

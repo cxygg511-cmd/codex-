@@ -1,98 +1,67 @@
-# ROCK Pi ROS1 串口桥接
+# ROCK Pi ROS Bridge
 
-这个脚本把 ROS 的 `/cmd_vel` 速度消息转成 STM32 能识别的串口命令。
+This folder contains the ROS-side code for the ROCK Pi / STM32 mecanum car.
 
-整体关系：
+## Files
 
-```text
-ROS /cmd_vel
-    ↓
-ROCK Pi serial_car_bridge.py
-    ↓ 串口
-STM32 RemoteControl.c
-    ↓
-Motor.c / Car.c
-    ↓
-电机驱动
-```
+- `serial_car_bridge.py`
+  - Subscribes `/cmd_vel` and converts it to STM32 `M vx vy wz` commands.
+  - Subscribes `/car/raw_command` and forwards short commands such as `?`, `D`, `S`, `YAW0`, `HOLD 1`, `T 90`.
+  - Publishes STM32 responses to `/car/serial_rx`.
 
-## 接线
+- `car_controller.h`
+  - Reusable C++ control helper for mission nodes.
+  - Provides `ping`, `stop`, `resetYaw`, `setHeadingHold`, `requestData`, `turnTo`, `moveForward`, `strafeLeft`, etc.
 
-如果用 ROCK Pi GPIO 串口直连 STM32 USART3：
+- `car_mission_node.cpp`
+  - Example mission flow using `CarController`.
 
-```text
-ROCK Pi TX  -> STM32 PB11 / USART3_RX
-ROCK Pi RX  -> STM32 PB10 / USART3_TX
-ROCK Pi GND -> STM32 GND
-```
+- `serial_test.py`
+  - Pure Python serial test, no ROS required.
 
-注意：两边必须共地，只用 3.3V 串口电平，不要接 5V。
+- `cmd_vel_test.py`
+  - Publishes one short `/cmd_vel` test command.
 
-如果用 USB-TTL 或 STM32 USB 虚拟串口，ROCK Pi 上一般会出现：
+## Copy To Catkin Package
+
+Copy these two files into your ROS package source folder:
 
 ```bash
-/dev/ttyUSB0
-/dev/ttyACM0
+cp ~/Desktop/RockPi/car_controller.h ~/catkin_ws/src/car_demo/src/
+cp ~/Desktop/RockPi/car_mission_node.cpp ~/catkin_ws/src/car_demo/src/
 ```
 
-查看串口设备：
+Then build:
 
 ```bash
-ls /dev/ttyUSB* /dev/ttyACM*
+cd ~/catkin_ws
+catkin_make
+source devel/setup.bash
 ```
 
-## 安装依赖
+## Run
+
+Terminal 1:
 
 ```bash
-sudo apt install -y python3-pip
-python3 -m pip install pyserial
+roscore
 ```
 
-## 直接运行
+Terminal 2:
 
 ```bash
-python3 serial_car_bridge.py _port:=/dev/ttyUSB0
+cd ~/Desktop/RockPi
+python3 serial_car_bridge.py _port:=/dev/ttyUSB0 _baudrate:=9600 _speed_scale:=100 _angular_scale:=100
 ```
 
-如果你的串口是 `/dev/ttyACM0`，就改成：
+Terminal 3:
 
 ```bash
-python3 serial_car_bridge.py _port:=/dev/ttyACM0
+rostopic echo /car/serial_rx
 ```
 
-## ROS 中运行
-
-把 `serial_car_bridge.py` 放到 ROS 包的 `scripts/` 目录后：
+Terminal 4:
 
 ```bash
-chmod +x serial_car_bridge.py
-rosrun your_package serial_car_bridge.py _port:=/dev/ttyUSB0
+rosrun car_demo car_mission_node
 ```
-
-## 速度映射
-
-脚本会把 `/cmd_vel` 映射成 STM32 命令：
-
-```text
-linear.x  -> vx，前进/后退
-linear.y  -> vy，麦轮左移/右移
-angular.z -> omega，左转/右转
-```
-
-发送给 STM32 的格式：
-
-```text
-M vx vy omega
-```
-
-例如：
-
-```text
-M 30 0 0      前进
-M 0 30 0      左移
-M 0 0 30      左转
-S             停车
-PING          通信测试
-```
-
-所有速度都会限制在 `-100..100`。STM32 端 500ms 收不到完整命令会自动停车。

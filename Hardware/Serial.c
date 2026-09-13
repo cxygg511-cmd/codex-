@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdarg.h>
 
-#define SERIAL_BAUD_RATE       115200
+#define SERIAL_BAUD_RATE       9600
 #define SERIAL_RX_BUFFER_SIZE  64
 
 uint8_t Serial_RxData;

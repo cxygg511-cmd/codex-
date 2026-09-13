@@ -3,7 +3,7 @@
 #include "Delay.h"
 #include <math.h>
 
-#define IMU_DT_SEC              0.005f
+#define IMU_DT_SEC              0.015f
 #define IMU_RAD_TO_DEG          57.2957795f
 #define IMU_ACC_SCALE           16384.0f
 #define IMU_GYRO_SCALE          131.0f
@@ -18,6 +18,7 @@
 #define IMU_YAW_Q               0.01f
 #define IMU_YAW_R               3.00f
 #define IMU_GYRO_Z_DEADBAND_DPS 0.80f
+#define IMU_YAW_SCALE           1.11f
 #define IMU_ACC_NORM_MIN        0.49f
 #define IMU_ACC_NORM_MAX        1.69f
 
@@ -279,7 +280,7 @@ void IMU_Update(void)
     g_imu_attitude.roll = atan2f(r8, r9) * IMU_RAD_TO_DEG;
     g_imu_attitude.pitch = -asinf(r7) * IMU_RAD_TO_DEG;
 
-    yaw_gyro = WrapAngle(yaw_gyro + g_imu_attitude.gyro_z_dps * IMU_DT_SEC);
+    yaw_gyro = WrapAngle(yaw_gyro + g_imu_attitude.gyro_z_dps * IMU_YAW_SCALE * IMU_DT_SEC);
     if (!yaw_filter_ready)
     {
         Kalman_Reset(&yaw_filter, yaw_gyro);
@@ -309,3 +310,4 @@ void IMU_ResetYaw(void)
     Kalman_Reset(&yaw_filter, 0.0f);
     yaw_filter_ready = 1;
 }
+
